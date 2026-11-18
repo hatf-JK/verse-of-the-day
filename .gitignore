@@ -19,9 +19,6 @@ Thumbs.db
 .idea/
 .directory
 
-# Local runtime saved verse logs
-saved_verses.json
-saved_verses.md
 
 # Python & Astral uv Isolation
 .pytest_cache/
@@ -32,3 +29,7 @@ saved_verses.md
 dist/
 build/
 
+
+# Local runtime saved verse logs
+saved_verses.json
+saved_verses.md
