@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Verse of the Day - Multi-edition English & Urdu AlQuran Cloud client."""
+"""
+Verse of the Day — CLI & Interactive Client for the AlQuran Cloud API.
+Supports random verses, deterministic daily verses, Surah:Ayah lookup,
+English/Urdu translations, keyword search, and local JSON/Markdown bookmarking.
+"""
 
+import argparse
 import datetime
 import random
 import sys
+import urllib.parse
 import requests
+
+from storage import load_saved_verses, save_verse_locally
 
 BASE_URL = "https://api.alquran.cloud/v1"
 AUDIO_CDN_TEMPLATE = "https://cdn.islamic.network/quran/audio/128/ar.alafasy/{number}.mp3"
@@ -21,17 +29,14 @@ EDITIONS = {
 
 
 def get_daily_ayah_number() -> int:
-    """Generate a deterministic ayah number (1..6236) seeded by today's UTC date."""
+    """Return a deterministic ayah number (1..6236) seeded by today's date."""
     today_iso = datetime.date.today().isoformat()
     rng = random.Random(today_iso)
     return rng.randint(1, TOTAL_AYAHS)
 
 
 def fetch_verse(reference: str | int, lang_key: str = "both") -> dict:
-    """
-    Fetch a Quran verse by global number (1..6236) or 'surah:ayah' reference
-    along with Uthmani Arabic and requested English/Urdu translation editions.
-    """
+    """Fetch a Quran verse by global number or 'surah:ayah' with translations."""
     selected_editions = EDITIONS.get(lang_key, EDITIONS["both"])
     editions_param = ",".join(["quran-uthmani"] + selected_editions)
     endpoint = f"{BASE_URL}/ayah/{reference}/editions/{editions_param}"
@@ -45,7 +50,7 @@ def fetch_verse(reference: str | int, lang_key: str = "both") -> dict:
         response.raise_for_status()
         payload = response.json()
     except requests.exceptions.HTTPError:
-        print(f"[Error] Reference '{reference}' was not found on AlQuran Cloud API.", file=sys.stderr)
+        print(f"[Error] Verse reference '{reference}' was not found (use 1-6236 or Surah:Ayah like 2:255).", file=sys.stderr)
         sys.exit(1)
     except requests.exceptions.RequestException as exc:
         print(f"[Error] Network failure while contacting AlQuran Cloud API: {exc}", file=sys.stderr)
@@ -53,7 +58,7 @@ def fetch_verse(reference: str | int, lang_key: str = "both") -> dict:
 
     data_list = payload.get("data", [])
     if payload.get("code") != 200 or not data_list:
-        print("[Error] Invalid response payload from API.", file=sys.stderr)
+        print("[Error] Unexpected API response structure.", file=sys.stderr)
         sys.exit(1)
 
     arabic_entry = data_list[0]
@@ -89,8 +94,41 @@ def fetch_verse(reference: str | int, lang_key: str = "both") -> dict:
     }
 
 
+def search_keyword(keyword: str, limit: int = 5) -> None:
+    """Search across all Surahs in English translation (en.sahih) for a keyword."""
+    safe_keyword = urllib.parse.quote(keyword.strip())
+    endpoint = f"{BASE_URL}/search/{safe_keyword}/all/en.sahih"
+
+    try:
+        response = requests.get(
+            endpoint,
+            headers={"Accept-Encoding": "gzip"},
+            timeout=TIMEOUT_SECONDS,
+        )
+        if response.status_code == 404:
+            print(f"\nNo verses found matching keyword: '{keyword}'.\n")
+            return
+        response.raise_for_status()
+        payload = response.json()
+    except requests.exceptions.RequestException as exc:
+        print(f"[Error] Search request failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    data = payload.get("data", {})
+    count = data.get("count", 0)
+    matches = data.get("matches", [])[:limit]
+
+    print(f"\nFound {count} total matches for '{keyword}' (showing top {len(matches)}):")
+    print("=" * 76)
+    for match in matches:
+        surah = match["surah"]
+        ref = f"{surah['number']}:{match['numberInSurah']}"
+        print(f"• [{ref}] Surah {surah['englishName']}: \"{match['text']}\"")
+    print("=" * 76 + "\n")
+
+
 def display_verse(verse: dict, mode_label: str = "RANDOM VERSE") -> None:
-    """Render the verse, translations, and audio recitation URL in the terminal."""
+    """Render the verse, translations, and audio URL to stdout."""
     divider = "=" * 76
     sub_divider = "-" * 76
     print(f"\n{divider}")
@@ -112,7 +150,99 @@ def display_verse(verse: dict, mode_label: str = "RANDOM VERSE") -> None:
     print(f"{divider}\n")
 
 
+def display_saved_history() -> None:
+    """Display all locally bookmarked verses from saved_verses.json."""
+    records = load_saved_verses()
+    if not records:
+        print("\nNo saved verses found yet. Run with --save to bookmark verses.\n")
+        return
+
+    print(f"\nSaved Verses History ({len(records)} bookmarked):")
+    print("=" * 76)
+    for idx, item in enumerate(records, start=1):
+        print(
+            f"{idx}. [{item['reference']}] Surah {item['surah_english']} "
+            f"({item['surah_meaning']}) — Saved on {item['fetched_at']}"
+        )
+    print("=" * 76 + "\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the command-line argument parser."""
+    parser = argparse.ArgumentParser(
+        description="Fetch a random or daily Quran verse with English and Urdu translations via AlQuran Cloud API."
+    )
+    parser.add_argument(
+        "-l",
+        "--lang",
+        choices=list(EDITIONS.keys()),
+        default="both",
+        help="Translation edition: 'en' (Sahih Intl), 'en-asad' (Asad), 'ur' (Jalandhry), 'ur-junagarhi' (Junagarhi), or 'both' (default).",
+    )
+    parser.add_argument(
+        "-d",
+        "--daily",
+        action="store_true",
+        help="Fetch deterministic Verse of the Day seeded by today's date instead of a random verse.",
+    )
+    parser.add_argument(
+        "-r",
+        "--ref",
+        type=str,
+        help="Fetch a specific verse by global number (1-6236) or Surah:Ayah (e.g., 2:255 or 55:13).",
+    )
+    parser.add_argument(
+        "-s",
+        "--save",
+        action="store_true",
+        help="Save the fetched verse to saved_verses.json and saved_verses.md.",
+    )
+    parser.add_argument(
+        "--search",
+        type=str,
+        help="Search the Quran in English for a specific keyword (e.g., 'mercy', 'patience').",
+    )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="List all previously bookmarked verses from local storage.",
+    )
+    return parser
+
+
+def main() -> None:
+    """Entry point for CLI execution."""
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.history:
+        display_saved_history()
+        return
+
+    if args.search:
+        search_keyword(args.search)
+        return
+
+    if args.ref:
+        target_ref = args.ref.strip()
+        mode_label = f"SELECTED VERSE ({target_ref})"
+    elif args.daily:
+        target_ref = get_daily_ayah_number()
+        mode_label = f"VERSE OF THE DAY ({datetime.date.today().isoformat()})"
+    else:
+        target_ref = random.randint(1, TOTAL_AYAHS)
+        mode_label = "RANDOM VERSE"
+
+    verse = fetch_verse(target_ref, lang_key=args.lang)
+    display_verse(verse, mode_label=mode_label)
+
+    if args.save:
+        is_new, json_path, md_path = save_verse_locally(verse)
+        if is_new:
+            print(f"[Saved] Verse {verse['reference']} appended to {json_path} and {md_path}.\n")
+        else:
+            print(f"[Info] Verse {verse['reference']} is already bookmarked in {json_path}.\n")
+
+
 if __name__ == "__main__":
-    random_ayah = random.randint(1, TOTAL_AYAHS)
-    verse_info = fetch_verse(random_ayah, lang_key="both")
-    display_verse(verse_info, mode_label="RANDOM VERSE")
+    main()
