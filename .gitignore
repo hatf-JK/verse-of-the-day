@@ -1,0 +1,34 @@
+# Virtual environment directories
+.venv/
+venv/
+env/
+
+# Python bytecode and cache directories
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables and secrets
+.env
+.env.local
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.directory
+
+# Local runtime saved verse logs
+saved_verses.json
+saved_verses.md
+
+# Python & Astral uv Isolation
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+*.egg-info/
+dist/
+build/
+
